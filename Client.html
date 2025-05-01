@@ -1,17 +1,343 @@
 <html>
+
 <head>
-<style>
-    
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <style>
+
+    </style>
 </head>
+
 <body>
+    <div style="position: absolute; left: 30; top: 30;">
+        <button id="captureButton" style="display:none;" onclick="capture()">Capture</button>
+        <button id="analyzeButton" style="display:none;" onclick="analyze()">Analyze</button>
+        <button id="viewFinderButton" style="display:none;" onclick="viewFinder()">ViewFinder</button>
+        <button id="connectButton" onclick="connect(document.getElementById('serverURL').value)">Connect</button>
+        <button id="disconnectButton" style="display:none;" onclick="disconnect()">Disconnect</button>
+        <input id="serverURL" type="text" value="ws://192.168.1.98:50000" />
+        <input id="circleX" title="X" type="range" style="display:none;" min="0" max="100" />
+        <input id="circleY" title="Y" type="range" style="display:none;" min="0" max="100" />
+        <input id="circleSize" title="Size" type="range" style="display:none;" min="0" max="100" />
+        <div id="minVal"></div>
+        <div id="maxVal"></div>
+        <div id="meanVal"></div>
+        <div id="avgVal"></div>
+    </div>
+    <canvas id="camOutput"></canvas>
+    <canvas id="histogram" style="display:none;"></canvas>
+
 
     <script>
         "use strict";
 
-        (function(){
-            console.log("hello world");
+        let webSocket = null;
+        let stillImageBuf = null;
+        let viewFinderBuf = null;
+
+        function scaleCanvas(id, width, height, keepAspectRatio = true){
+            let canvas = document.getElementById(id);
+            const scale = window.devicePixelRatio;
+            canvas.width = width * scale;
+            canvas.height = height * scale;
+
+            //reset style first
+            canvas.style.width = "";
+            canvas.style.height = "";
+            canvas.style.maxWidth = "";
+            canvas.style.maxHeight = "";
+            canvas.style.aspectRatio = "";
+
+            if(keepAspectRatio){
+                //canvas.style.maxWidth = "100%";
+                //canvas.style.width = `${width}px`; // CSS size
+                canvas.style.height = `${height}px`;
+                canvas.style.maxHeight = "100%";
+                canvas.style.aspectRatio = width / height;
+            }
+            else{
+                canvas.style.width = `${width}px`; // CSS size
+                canvas.style.height = `${height}px`;
+                canvas.style.maxHeight = "100%";
+                canvas.style.maxWidth = "100%";
+            }
+            let ctx = canvas.getContext("2d");
+            ctx.reset();
+        }
+
+        function visualiseRawImage(stillImage, width, height, maxVal){
+            let circleX = document.getElementById("circleX").value * width / 100;
+            let circleY = document.getElementById("circleY").value * height / 100;
+            let diameter = document.getElementById("circleSize").value * height / 100;
+
+            let stillImageNormalized = new Uint8ClampedArray(stillImage.length * 4);
+
+            for (let y = 0; y < height; ++y) {
+                for(let x = 0; x < width; ++x){
+                    let idx = y * width + x;
+
+                    let val = stillImage[idx];
+                    let normValR = val <= maxVal ? (val / maxVal) * 255 : 255;
+                    let normValG = val <= maxVal ? normValR : 0;
+                    let normValB = val <= maxVal ? normValR : 0;
+
+                    if(withinCircle(x, y, circleX, circleY, diameter)){
+                        normValR = Math.min(normValR * 2, 255);
+                    }
+
+                    stillImageNormalized[idx * 4 + 0] = normValR;
+                    stillImageNormalized[idx * 4 + 1] = normValG;
+                    stillImageNormalized[idx * 4 + 2] = normValB;
+                    stillImageNormalized[idx * 4 + 3] = 255;
+                }
+            }
+
+            //debug draw image data
+            const imageData = new ImageData(stillImageNormalized, width, height, { colorSpace: "srgb" });
+            const imageBitmap = window.createImageBitmap(imageData);
+
+            imageBitmap.then(function (bitmap) {
+                let canvas = document.getElementById("histogram");
+                let ctx = canvas.getContext("2d");
+                ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+                bitmap.close();
+                drawCircle(canvas, document.getElementById("circleX").value * canvas.width / 100, document.getElementById("circleY").value * canvas.height /100, document.getElementById("circleSize").value * canvas.height / 100);
+            });
+        }
+
+        function drawCircle(canvas, x, y, d){
+            let ctx = canvas.getContext("2d");
+            ctx.strokeStyle = "red";
+            ctx.beginPath();
+            ctx.arc(x, y, d/2, 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+
+        function withinCircle(x, y, circleX, circleY, diameter){
+            let radius = diameter / 2;
+
+            let diffX = x - circleX;
+            let diffY = y - circleY;
+            
+            return (diffX * diffX + diffY * diffY) < (radius * radius);
+        }
+
+        function drawHistogram(stillImage, width, height, maxVal){
+            let circleX = document.getElementById("circleX").value * width / 100;
+            let circleY = document.getElementById("circleY").value * height / 100;
+            let diameter = document.getElementById("circleSize").value * height / 100;
+
+            let min = maxVal;
+            let max = 0;
+            let avg = 0;
+            let counter = 0;
+            for (let y = 0; y < height; ++y) {
+                for(let x = 0; x < width; ++x){
+                    if(!withinCircle(x, y, circleX, circleY, diameter)) continue;
+
+                    let idx = y * width + x;
+                    let val = stillImage[idx];
+                    min = Math.min(val, min);
+                    max = Math.max(val, max);
+                    avg += val;
+                    counter++;
+                }
+            }
+            avg /= counter;
+
+            let histogram = new Map();
+            for (let x = Math.floor(min); x <= Math.floor(max); ++x) {
+                histogram.set(x, 0);
+            }
+
+            for (let y = 0; y < height; ++y) {
+                for(let x = 0; x < width; ++x){
+                    if(!withinCircle(x, y, circleX, circleY, diameter)) continue;
+
+                    let idx = y * width + x;
+                    histogram.set(Math.floor(stillImage[idx]), histogram.get(Math.floor(stillImage[idx])) + 1);
+                }
+            }
+
+            let mostFrequentVal = 0;
+            let mostFrequentKey = 0;
+            for (const [key, val] of histogram) {
+                if (mostFrequentVal < val) {
+                    mostFrequentVal = val;
+                    mostFrequentKey = key;
+                }
+            }
+
+            let canvas = document.getElementById("histogram");
+            let ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "#555";
+            let barCounter = 0;
+            let barwidth = canvas.width / histogram.size;
+            for (const [key, val] of histogram) {
+                ctx.fillRect(
+                    (barwidth) * barCounter,
+                    (1.0 - val / mostFrequentVal) * canvas.height,
+                    barwidth,
+                    val / mostFrequentVal * canvas.height);
+                barCounter++;
+            }
+
+            document.getElementById("minVal").innerHTML = "Min: " + min;
+            document.getElementById("maxVal").innerHTML = "Max: " + max;
+            document.getElementById("meanVal").innerHTML = "Mean: " + mostFrequentKey;
+            document.getElementById("avgVal").innerHTML = "Avg: " + avg.toFixed(2);
+        }
+
+        function handleCapture(arrayBuf, visualiseStillImage = true){
+            let uint32Array = new Uint32Array(arrayBuf, 0, 5);
+
+            let type = uint32Array[0];
+            let size = uint32Array[1];
+            let width = uint32Array[2];
+            let height = uint32Array[3];
+            let maxVal = uint32Array[4];
+
+            if (type == 1) //viewFinder
+            {
+                viewFinderBuf = arrayBuf;
+
+                let viewFinderImage = new Uint8ClampedArray(arrayBuf, 5 * 4, size);
+
+                const imageData = new ImageData(viewFinderImage, width, height, { colorSpace: "srgb" });
+                const imageBitmap = window.createImageBitmap(imageData);
+
+                scaleCanvas("camOutput", width, height);
+
+                imageBitmap.then(function (bitmap) {
+                    let canvas = document.getElementById("camOutput");
+                    let ctx = canvas.getContext("2d");
+                    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+                    bitmap.close();
+                    drawCircle(canvas, document.getElementById("circleX").value * canvas.width / 100, document.getElementById("circleY").value * canvas.height /100, document.getElementById("circleSize").value * canvas.height / 100);
+                });
+            }
+            else if (type == 2) //still capture
+            {
+                stillImageBuf = arrayBuf;
+                
+                let stillImage = new Uint16Array(arrayBuf, 5 * 4, size / 2);
+
+                if(visualiseStillImage)
+                {
+                    scaleCanvas("histogram", width, height, true);
+                    visualiseRawImage(stillImage, width, height, maxVal);
+                }
+                else
+                {
+                    scaleCanvas("histogram", width, height, false);
+                    drawHistogram(stillImage, width, height, maxVal);
+                }
+            }
+        }
+
+        function viewFinder(){
+            document.getElementById("viewFinderButton").style.display = "none";
+            document.getElementById("circleX").style.display = "block";
+            document.getElementById("circleY").style.display = "block";
+            document.getElementById("circleSize").style.display = "block";
+            document.getElementById("captureButton").style.display = "inline-block";
+
+            document.getElementById("camOutput").style.display = "block";
+            document.getElementById("histogram").style.display = "none";
+
+            document.getElementById("minVal").innerHTML = "";
+            document.getElementById("maxVal").innerHTML = "";
+            document.getElementById("meanVal").innerHTML = "";
+            document.getElementById("avgVal").innerHTML = "";
+
+            handleCapture(viewFinderBuf, true);
+        }
+
+        function analyze(){
+            document.getElementById("analyzeButton").style.display = "none";
+
+            document.getElementById("camOutput").style.display = "none";
+            document.getElementById("histogram").style.display = "block";
+
+            handleCapture(stillImageBuf, false);
+        }
+
+        function capture() {
+            let canvas = document.getElementById("histogram");
+            let ctx = canvas.getContext("2d");
+            ctx.reset();
+
+            document.getElementById("circleX").style.display = "none";
+            document.getElementById("circleY").style.display = "none";
+            document.getElementById("circleSize").style.display = "none";
+            document.getElementById("captureButton").style.display = "none";
+            document.getElementById("viewFinderButton").style.display = "inline-block";
+            document.getElementById("analyzeButton").style.display = "inline-block";
+
+            document.getElementById("camOutput").style.display = "none";
+            document.getElementById("histogram").style.display = "block";
+
+            if (webSocket) {
+                webSocket.send("capture");
+            }
+        }
+
+        function disconnect(){
+            webSocket.close();
+            document.getElementById("serverURL").style.display = "inline-block";
+            document.getElementById("connectButton").style.display = "inline-block";
+            document.getElementById("disconnectButton").style.display = "none";
+            document.getElementById("captureButton").style.display = "none";
+            document.getElementById("analyzeButton").style.display = "none";
+            document.getElementById("circleX").style.display = "none";
+            document.getElementById("circleY").style.display = "none";
+            document.getElementById("circleSize").style.display = "none";
+        }
+
+        function connect(serverURL) {
+            try {
+                webSocket = new WebSocket(serverURL);
+                webSocket.binaryType = 'arraybuffer';
+
+                webSocket.onerror = (event) => {
+                    console.error("Failed to connect to " + serverURL);
+                }
+
+                webSocket.onclose = (event) => {
+                    console.log("Connection closed");
+                }
+
+                webSocket.onopen = (event) => {
+                    console.log("Connection opened successfully");
+                    document.getElementById("serverURL").style.display = "none";
+                    document.getElementById("connectButton").style.display = "none";
+                    document.getElementById("disconnectButton").style.display = "inline-block";
+                    document.getElementById("captureButton").style.display = "inline-block";
+                    document.getElementById("analyzeButton").style.display = "none";
+                    document.getElementById("circleX").style.display = "block";
+                    document.getElementById("circleY").style.display = "block";
+                    document.getElementById("circleSize").style.display = "block";
+                    webSocket.send("hello server!");
+                }
+
+                webSocket.onmessage = (event) => {
+                    if (typeof event.data == "string") {
+                        console.log(event.data);
+                    }
+                    else if (typeof event.data == "object") {                       
+                        handleCapture(event.data, true);
+                    }
+                }
+            }
+            catch (error) {
+                console.error(error.message);
+            }
+        }
+
+        (function () {
+            //console.log("hello world");
         })();
     </script>
 </body>
+
 </html>
