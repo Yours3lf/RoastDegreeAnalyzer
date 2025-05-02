@@ -8,20 +8,34 @@
 </head>
 
 <body>
-    <div style="position: absolute; left: 30; top: 30;">
+    <div style="position: absolute; left: 300; top: 30;">
+        <div id="fileSaveDiv">
+            <input type="text" placeholder="Filename" readonly="readonly" onclick="pickSaveFile()" id="fileSavePath" />
+            <button onclick="saveRoastAnalysis()">Save</button>
+        </div>
+        <div id="fileLoadDiv">
+            <input type="text" placeholder="Filename" readonly="readonly"
+                onclick="document.getElementById('filePicker').click();" id="fileLoadPath" />
+            <input type="file" id="filePicker" accept=".roast" style="display:none;"
+                onchange="document.getElementById('fileLoadPath').value = this.files[0].name; fileToLoad = this.files[0];" />
+            <button onclick="loadRoastAnalysis()">Load</button>
+        </div>
         <button id="captureButton" style="display:none;" onclick="capture()">Capture</button>
         <button id="analyzeButton" style="display:none;" onclick="analyze()">Analyze</button>
         <button id="viewFinderButton" style="display:none;" onclick="viewFinder()">ViewFinder</button>
         <button id="connectButton" onclick="connect(document.getElementById('serverURL').value)">Connect</button>
         <button id="disconnectButton" style="display:none;" onclick="disconnect()">Disconnect</button>
         <input id="serverURL" type="text" value="ws://192.168.1.98:50000" />
-        <input id="circleX" title="X" type="range" style="display:none;" min="0" max="100" />
-        <input id="circleY" title="Y" type="range" style="display:none;" min="0" max="100" />
-        <input id="circleSize" title="Size" type="range" style="display:none;" min="0" max="100" />
+        <input id="circleX" title="X" type="range" style="display:none;" min="0" max="100" value="46.5" step="0.5" />
+        <input id="circleY" title="Y" type="range" style="display:none;" min="0" max="100" value="56" step="0.5" />
+        <input id="circleSize" title="Size" type="range" style="display:none;" min="0" max="100" value="42.5"
+            step="0.5" />
         <div id="minVal"></div>
         <div id="maxVal"></div>
         <div id="meanVal"></div>
         <div id="avgVal"></div>
+        <div id="top20AvgVal"></div>
+        <div id="agtronVal"></div>
     </div>
     <canvas id="camOutput"></canvas>
     <canvas id="histogram" style="display:none;"></canvas>
@@ -34,7 +48,99 @@
         let stillImageBuf = null;
         let viewFinderBuf = null;
 
-        function scaleCanvas(id, width, height, keepAspectRatio = true){
+        let fileToLoad = null;
+        let fileToSave = null;
+
+        //this needs to be calibrated to the camera's exposure time settings
+        //currently it's for 40ms expoure
+        //reference cards measured mean values of sample area
+        //R55 measures 288 for some reason...
+        const r25 = 115; 
+        const r35 = 125;
+        const r45 = 140;  
+        const r55 = 180; 
+        const r65 = 220;
+        const r75 = 235; 
+        const r85 = 245; 
+        const r95 = 255; 
+
+        //Estimate Agtron value given an input measurement
+        //uses above calibration
+        function getAgtronValue(x) {
+            return 0.000073 * x**3 + -0.039923 * x**2 + 7.377896 * x + -406.972289;            
+        }
+
+        async function pickSaveFile() {
+            fileToSave = await window.showSaveFilePicker({
+                types: [{
+                    description: "ROAST file",
+                    accept: { "application/octet-stream": [".roast"] }
+                }]
+            });
+            let file = await fileToSave.getFile();
+            document.getElementById('fileSavePath').value = file.name;
+        }
+
+        async function saveRoastAnalysis() {
+            if (fileToSave != null) {
+                try {
+                    const fileStream = await fileToSave.createWritable();
+                    let outBuf = new ArrayBuffer(stillImageBuf.byteLength + 3 * 4);
+                    let outBuf32 = new Uint32Array(outBuf);
+                    outBuf32[0] = document.getElementById("circleX").value;
+                    outBuf32[1] = document.getElementById("circleY").value;
+                    outBuf32[2] = document.getElementById("circleSize").value;
+                    new Uint8Array(outBuf).set(new Uint8Array(stillImageBuf), 3 * 4);
+
+                    await fileStream.write(new Blob([outBuf], { type: "application/octet-stream" }));
+                    await fileStream.close();
+                }
+                catch (e) {
+                    console.error(e);
+                }
+            }
+        }
+
+        function loadRoastAnalysis() {
+            if (fileToLoad != null) {
+                try {
+                    let reader = new FileReader();
+                    reader.readAsArrayBuffer(fileToLoad);
+                    reader.onload = function (evt) {
+                        let circleBuf = new Uint32Array(reader.result);
+                        let imageBuf = new Uint8Array(reader.result, 3 * 4);
+
+                        stillImageBuf = new ArrayBuffer(imageBuf.byteLength);
+                        new Uint8Array(stillImageBuf).set(imageBuf);
+
+                        document.getElementById("circleX").value = circleBuf[0];
+                        document.getElementById("circleY").value = circleBuf[1];
+                        document.getElementById("circleSize").value = circleBuf[2];
+
+                        let canvas = document.getElementById("histogram");
+                        let ctx = canvas.getContext("2d");
+                        ctx.reset();
+
+                        document.getElementById("circleX").style.display = "none";
+                        document.getElementById("circleY").style.display = "none";
+                        document.getElementById("circleSize").style.display = "none";
+                        document.getElementById("captureButton").style.display = "none";
+                        document.getElementById("viewFinderButton").style.display = "inline-block";
+                        document.getElementById("analyzeButton").style.display = "inline-block";
+
+                        document.getElementById("camOutput").style.display = "none";
+                        document.getElementById("histogram").style.display = "block";
+
+                        handleCapture(stillImageBuf, true);
+                    }
+                }
+                catch (e) {
+                    console.error(e);
+                }
+            }
+        }
+
+        function scaleCanvas(id, width, height, keepAspectRatio = true) {
             let canvas = document.getElementById(id);
             const scale = window.devicePixelRatio;
             canvas.width = width * scale;
@@ -47,14 +153,14 @@
             canvas.style.maxHeight = "";
             canvas.style.aspectRatio = "";
 
-            if(keepAspectRatio){
+            if (keepAspectRatio) {
                 //canvas.style.maxWidth = "100%";
                 //canvas.style.width = `${width}px`; // CSS size
                 canvas.style.height = `${height}px`;
                 canvas.style.maxHeight = "100%";
                 canvas.style.aspectRatio = width / height;
             }
-            else{
+            else {
                 canvas.style.width = `${width}px`; // CSS size
                 canvas.style.height = `${height}px`;
                 canvas.style.maxHeight = "100%";
@@ -64,7 +170,7 @@
             ctx.reset();
         }
 
-        function visualiseRawImage(stillImage, width, height, maxVal){
+        function visualiseRawImage(stillImage, width, height, maxVal) {
             let circleX = document.getElementById("circleX").value * width / 100;
             let circleY = document.getElementById("circleY").value * height / 100;
             let diameter = document.getElementById("circleSize").value * height / 100;
@@ -72,15 +178,15 @@
             let stillImageNormalized = new Uint8ClampedArray(stillImage.length * 4);
 
             for (let y = 0; y < height; ++y) {
-                for(let x = 0; x < width; ++x){
+                for (let x = 0; x < width; ++x) {
                     let idx = y * width + x;
 
                     let val = stillImage[idx];
-                    let normValR = val <= maxVal ? (val / maxVal) * 255 : 255;
-                    let normValG = val <= maxVal ? normValR : 0;
-                    let normValB = val <= maxVal ? normValR : 0;
+                    let normValR = val <= (maxVal - 1) ? (val / maxVal) * 255 : 255;
+                    let normValG = val <= (maxVal - 1) ? normValR : 0;
+                    let normValB = val <= (maxVal - 1) ? normValR : 0;
 
-                    if(withinCircle(x, y, circleX, circleY, diameter)){
+                    if (withinCircle(x, y, circleX, circleY, diameter)) {
                         normValR = Math.min(normValR * 2, 255);
                     }
 
@@ -100,28 +206,28 @@
                 let ctx = canvas.getContext("2d");
                 ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
                 bitmap.close();
-                drawCircle(canvas, document.getElementById("circleX").value * canvas.width / 100, document.getElementById("circleY").value * canvas.height /100, document.getElementById("circleSize").value * canvas.height / 100);
+                drawCircle(canvas, document.getElementById("circleX").value * canvas.width / 100, document.getElementById("circleY").value * canvas.height / 100, document.getElementById("circleSize").value * canvas.height / 100);
             });
         }
 
-        function drawCircle(canvas, x, y, d){
+        function drawCircle(canvas, x, y, d) {
             let ctx = canvas.getContext("2d");
             ctx.strokeStyle = "red";
             ctx.beginPath();
-            ctx.arc(x, y, d/2, 0, 2 * Math.PI);
+            ctx.arc(x, y, d / 2, 0, 2 * Math.PI);
             ctx.stroke();
         }
 
-        function withinCircle(x, y, circleX, circleY, diameter){
+        function withinCircle(x, y, circleX, circleY, diameter) {
             let radius = diameter / 2;
 
             let diffX = x - circleX;
             let diffY = y - circleY;
-            
+
             return (diffX * diffX + diffY * diffY) < (radius * radius);
         }
 
-        function drawHistogram(stillImage, width, height, maxVal){
+        function drawHistogram(stillImage, width, height, maxVal) {
             let circleX = document.getElementById("circleX").value * width / 100;
             let circleY = document.getElementById("circleY").value * height / 100;
             let diameter = document.getElementById("circleSize").value * height / 100;
@@ -131,11 +237,14 @@
             let avg = 0;
             let counter = 0;
             for (let y = 0; y < height; ++y) {
-                for(let x = 0; x < width; ++x){
-                    if(!withinCircle(x, y, circleX, circleY, diameter)) continue;
+                for (let x = 0; x < width; ++x) {
+                    if (!withinCircle(x, y, circleX, circleY, diameter)) continue;
 
                     let idx = y * width + x;
                     let val = stillImage[idx];
+
+                    if (val >= maxVal) continue;
+
                     min = Math.min(val, min);
                     max = Math.max(val, max);
                     avg += val;
@@ -150,10 +259,13 @@
             }
 
             for (let y = 0; y < height; ++y) {
-                for(let x = 0; x < width; ++x){
-                    if(!withinCircle(x, y, circleX, circleY, diameter)) continue;
+                for (let x = 0; x < width; ++x) {
+                    if (!withinCircle(x, y, circleX, circleY, diameter)) continue;
 
                     let idx = y * width + x;
+
+                    if (stillImage[idx] >= maxVal) continue;
+
                     histogram.set(Math.floor(stillImage[idx]), histogram.get(Math.floor(stillImage[idx])) + 1);
                 }
             }
@@ -167,13 +279,45 @@
                 }
             }
 
+            let numConsidered = 20;
+            let sortedArray = Array.from(histogram.entries());
+            sortedArray = sortedArray.sort(function(a, b){
+                if(a[1] < b[1]) return 1;
+                if(a[1] > b[1]) return -1;
+                if(a[1] == b[1]) return 0;
+            });
+
+            let candidate = 0;
+            for(let i = 0; i < numConsidered; i++){ 
+                candidate += sortedArray[i][0];
+            }
+            candidate /= numConsidered;
+
             let canvas = document.getElementById("histogram");
             let ctx = canvas.getContext("2d");
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = "#555";
             let barCounter = 0;
             let barwidth = canvas.width / histogram.size;
             for (const [key, val] of histogram) {
+                if (Math.abs(key - min) < 2){
+                    ctx.fillStyle = "#000000";
+                }
+                else if(Math.abs(key - max) < 2){
+                    ctx.fillStyle = "#ffffff";
+                }
+                else if(Math.abs(key - avg) < 2){
+                    ctx.fillStyle = "#ff0000";
+                }
+                else if(Math.abs(key - mostFrequentKey) < 2){
+                    ctx.fillStyle = "#ffff00";
+                }
+                else if(Math.abs(key - candidate) < 2){
+                    ctx.fillStyle = "#00ff00";
+                }
+                else {
+                    ctx.fillStyle = "#555";
+                }
+
                 ctx.fillRect(
                     (barwidth) * barCounter,
                     (1.0 - val / mostFrequentVal) * canvas.height,
@@ -186,9 +330,11 @@
             document.getElementById("maxVal").innerHTML = "Max: " + max;
             document.getElementById("meanVal").innerHTML = "Mean: " + mostFrequentKey;
             document.getElementById("avgVal").innerHTML = "Avg: " + avg.toFixed(2);
+            document.getElementById("top20AvgVal").innerHTML = "Top " + numConsidered + " avg: " + candidate.toFixed(2);
+            document.getElementById("agtronVal").innerHTML = "Agtron R" + Math.floor(getAgtronValue(avg));
         }
 
-        function handleCapture(arrayBuf, visualiseStillImage = true){
+        function handleCapture(arrayBuf, visualiseStillImage = true) {
             let uint32Array = new Uint32Array(arrayBuf, 0, 5);
 
             let type = uint32Array[0];
@@ -213,29 +359,27 @@
                     let ctx = canvas.getContext("2d");
                     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
                     bitmap.close();
-                    drawCircle(canvas, document.getElementById("circleX").value * canvas.width / 100, document.getElementById("circleY").value * canvas.height /100, document.getElementById("circleSize").value * canvas.height / 100);
+                    drawCircle(canvas, document.getElementById("circleX").value * canvas.width / 100, document.getElementById("circleY").value * canvas.height / 100, document.getElementById("circleSize").value * canvas.height / 100);
                 });
             }
             else if (type == 2) //still capture
             {
                 stillImageBuf = arrayBuf;
-                
+
                 let stillImage = new Uint16Array(arrayBuf, 5 * 4, size / 2);
 
-                if(visualiseStillImage)
-                {
+                if (visualiseStillImage) {
                     scaleCanvas("histogram", width, height, true);
                     visualiseRawImage(stillImage, width, height, maxVal);
                 }
-                else
-                {
+                else {
                     scaleCanvas("histogram", width, height, false);
                     drawHistogram(stillImage, width, height, maxVal);
                 }
             }
         }
 
-        function viewFinder(){
+        function viewFinder() {
             document.getElementById("viewFinderButton").style.display = "none";
             document.getElementById("circleX").style.display = "block";
             document.getElementById("circleY").style.display = "block";
@@ -249,11 +393,13 @@
             document.getElementById("maxVal").innerHTML = "";
             document.getElementById("meanVal").innerHTML = "";
             document.getElementById("avgVal").innerHTML = "";
+            document.getElementById("top20AvgVal").innerHTML = "";
+            document.getElementById("agtronVal").innerHTML = "";
 
             handleCapture(viewFinderBuf, true);
         }
 
-        function analyze(){
+        function analyze() {
             document.getElementById("analyzeButton").style.display = "none";
 
             document.getElementById("camOutput").style.display = "none";
@@ -282,7 +428,7 @@
             }
         }
 
-        function disconnect(){
+        function disconnect() {
             webSocket.close();
             document.getElementById("serverURL").style.display = "inline-block";
             document.getElementById("connectButton").style.display = "inline-block";
@@ -324,7 +470,7 @@
                     if (typeof event.data == "string") {
                         console.log(event.data);
                     }
-                    else if (typeof event.data == "object") {                       
+                    else if (typeof event.data == "object") {
                         handleCapture(event.data, true);
                     }
                 }
