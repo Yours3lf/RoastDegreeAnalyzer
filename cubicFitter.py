@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Input data
-r_values = np.array([115, 125, 140, 220, 235, 245, 255])
+r_values = np.array([138.66, 145.85, 163.43, 258.23, 270.57, 289.28, 299.15])
 agtron_values = np.array([25, 35, 45, 65, 75, 85, 95])
 
 # Fit a cubic polynomial

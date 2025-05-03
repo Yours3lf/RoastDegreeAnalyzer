@@ -51,23 +51,54 @@
         let fileToLoad = null;
         let fileToSave = null;
 
-        //this needs to be calibrated to the camera's exposure time settings
-        //currently it's for 40ms expoure
-        //reference cards measured mean values of sample area
-        //R55 measures 288 for some reason...
-        const r25 = 115; 
-        const r35 = 125;
-        const r45 = 140;  
-        const r55 = 180; 
-        const r65 = 220;
-        const r75 = 235; 
-        const r85 = 245; 
-        const r95 = 255; 
+        /**
+        //new more diffuse light calibration
+        //40ms capture time so that there's more difference between R levels
+        //we take the avg of 5 values of mean and top10 most freq values
+        //taken measurements of the reference cards, small portion avoiding LED highlight
+        const r25 = 138.66
+        mean  138,   139,   139,   138,   139   = 138.6
+        top10 139.5, 138.5, 138.5, 138.6, 138.5 = 138.72
+        
+        const r35 = 145.85
+        mean  146,   147,   145,   145,   145   = 145.6
+        top10 145.5, 146.5, 146.5, 145.5, 146.5 = 146.1
+
+        const r45 = 163.43
+        mean  162,   165,   162,   163,   163   = 163
+        top10 165.8, 163.4, 162.6, 163.0, 164.5 = 163.86
+
+        //outlier... camera is probably too sensitive to this 
+        //we'll ignore for calibration purposes
+        const r55 = 337.89
+        mean  337,   330,   333,   336,   344   = 336
+        top10 345.6, 334.5, 339.4, 338.6, 340.8 = 339.78
+
+        const r65 = 258.23
+        mean  266,   261,   254,   251,   253   = 257
+        top10 263.3, 256.8, 260.5, 258.8, 257.9 = 259.46
+
+        const r75 = 270.57
+        mean  275,   268,   270,   267,   268 = 269.6
+        top10 276.4, 270.5, 268.9, 268.9, 273 = 271.54
+        
+        const r85 = 289.28
+        mean  302,   298,   279,   287,   283   = 289.8
+        top10 294.4, 292.3, 284.8, 286.8, 285.5 = 288.76
+        
+        const r95 = 299.15
+        mean  297,   288,   293,   303,   309   = 298
+        top10 298.7, 297.8, 299.6, 300.9, 304.5 = 300.3
+        /**/
 
         //Estimate Agtron value given an input measurement
         //uses above calibration
-        function getAgtronValue(x) {
-            return 0.000073 * x**3 + -0.039923 * x**2 + 7.377896 * x + -406.972289;            
+        //use black paper to figure out correction factor
+        //with correction factor you should get R0
+        function getAgtronValue(x, correctionFactor = 0.9734) {
+            let val = x * correctionFactor;
+
+            return 0.000049 * val**3 + -0.032270 * val**2 + 7.122484 * val + -472.788170;
         }
 
         async function pickSaveFile() {
@@ -279,7 +310,7 @@
                 }
             }
 
-            let numConsidered = 20;
+            let numConsidered = 10;
             let sortedArray = Array.from(histogram.entries());
             sortedArray = sortedArray.sort(function(a, b){
                 if(a[1] < b[1]) return 1;
