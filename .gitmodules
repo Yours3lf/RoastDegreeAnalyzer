@@ -1,3 +1,6 @@
 [submodule "libwebsocket"]
 	path = libwebsocket
 	url = https://github.com/Yours3lf/libwebsocket
+[submodule "ImageRoaster"]
+	path = ImageRoaster
+	url = https://github.com/Yours3lf/ImageRoaster

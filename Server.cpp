@@ -1,5 +1,7 @@
 #include "libwebsocket/WebsocketServer.h"
 
+#include "ImageRoaster/ImageRoaster.h"
+
 #include <libcamera/libcamera.h>
 
 #include <iomanip>
@@ -12,6 +14,149 @@ std::unique_ptr<websocketServer> ws;
 
 std::unordered_map<int, std::pair<void*, size_t> > fdToMem;
 std::unordered_map<int, std::pair<size_t, size_t> > fdToMapInfo;
+
+static ImageRoaster ic;
+
+std::vector<uint8_t> threadDataA;
+uint32_t threadDataTypeA = 0, threadDataWidthA = 0, threadDataHeightA = 0;
+std::vector<uint8_t> threadDataB;
+uint32_t threadDataTypeB = 0, threadDataWidthB = 0, threadDataHeightB = 0;
+bool threadDataAorB = true;
+std::mutex threadDataSelectorMutex;
+std::mutex threadDataMutexA;
+std::mutex threadDataMutexB;
+
+void compressAndSend(uint8_t* data, uint32_t type, uint32_t width, uint32_t height)
+{
+	std::unique_ptr<websocketMessage> m(new websocketMessage());
+	m->type = FRAME_BINARY;
+
+	if(type == 1)
+	{
+		std::vector<uint8_t> resBuf;
+		ic.compressImage<uint8_t>(resBuf, data, 8, 4, width, height, 8);
+		m->buf.resize(sizeof(uint32_t) + resBuf.size());
+		*(uint32_t*)(m->buf.data()) = type;
+		memcpy(m->buf.data() + sizeof(uint32_t), resBuf.data(), resBuf.size());
+	}
+	else if(type == 2)
+	{
+		const uint16_t* pixels = (const uint16_t*)data;
+
+		uint16_t maxVal = 0x3ff;
+
+		uint32_t counter = 0;
+
+		//process raw image row-by-row
+		//each row will contain either R-G or B-G components alternating
+		//eg.
+		//BGBGBGBG
+		//GRGRGRGR
+		//BGBGBGBG
+		//GRGRGRGR
+		//this would normally get de-bayered, but we'll just extract 
+		//the red component and work with that
+
+		auto start = std::chrono::system_clock::now();
+
+		std::vector<uint16_t> rChannel;
+		rChannel.resize((width >> 1) * (height >> 1));
+
+		//skip even rows, we're only interested in R values
+		for(int y = 1; y < height; y += 2)
+		{
+			//skip even columns, we're only interested in R values
+			for(int x = 1; x < width; x += 2)
+			{
+				//extract bottom 10bits
+				uint16_t pixel = pixels[y * width + x] & maxVal; //
+
+				rChannel[counter++] = pixel;
+			}
+		}
+
+		auto end = std::chrono::system_clock::now();
+		auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+		std::cout << "R channel extraction time: " << elapsed << std::endl;
+
+		std::vector<uint8_t> resBuf;
+		ic.compressImage<uint16_t>(resBuf, rChannel.data(), 10, 1, width >> 1, height >> 1, 8);
+		m->buf.resize(sizeof(uint32_t) + resBuf.size());
+		*(uint32_t*)(m->buf.data()) = type;
+		memcpy(m->buf.data() + sizeof(uint32_t), resBuf.data(), resBuf.size());
+	}
+
+	ws->broadcastMessage(std::move(m));
+}
+
+void compressionThreadFunc()
+{
+	while(ws->hasConnections())
+	{
+		uint32_t width, height, type;
+		uint8_t* data;
+		{
+			std::lock_guard<std::mutex> guard(threadDataSelectorMutex);	
+
+			if(threadDataAorB)
+			{
+				data = threadDataA.data();
+				width = threadDataWidthA;
+				height = threadDataHeightA;
+				type = threadDataTypeA;
+				threadDataMutexA.lock();
+			}
+			else
+			{
+				data = threadDataB.data();
+				width = threadDataWidthB;
+				height = threadDataHeightB;
+				type = threadDataTypeB;
+				threadDataMutexB.lock();
+			}
+		}
+
+		if(width == 0 || height == 0 || type == 0 || data == 0)
+		{
+			{
+				std::lock_guard<std::mutex> guard(threadDataSelectorMutex);	
+	
+				if(threadDataAorB)
+				{
+					threadDataMutexA.unlock();
+					threadDataAorB = !threadDataAorB;
+				}
+				else
+				{
+					threadDataMutexB.unlock();
+					threadDataAorB = !threadDataAorB;
+				}
+			}
+
+			std::this_thread::sleep_for(std::chrono::microseconds(1000));
+			continue;
+		}
+
+		compressAndSend(data, type, width, height);
+
+		{
+			std::lock_guard<std::mutex> guard(threadDataSelectorMutex);	
+
+			if(threadDataAorB)
+			{
+				threadDataTypeA = 0;
+				threadDataMutexA.unlock();
+				threadDataAorB = !threadDataAorB;
+			}
+			else
+			{
+				threadDataTypeB = 0;
+				threadDataMutexB.unlock();
+				threadDataAorB = !threadDataAorB;
+			}
+		}
+	}
+}
 
 static void requestComplete(Request *request)
 {
@@ -52,87 +197,47 @@ static void requestComplete(Request *request)
 	uint32_t stride = buffers.begin()->first->configuration().stride;
 	auto dimensions = buffers.begin()->first->configuration().size;
 
-	//send data over WebSockets
-	//type eg.
-	// 1 = viewFinder
-	// 2 = stillCapture
-	//metadata.sequence
-	//planeMetaData.bytesused
-
-	std::unique_ptr<websocketMessage> m(new websocketMessage());
-	m->type = FRAME_BINARY;
-
 	uint32_t type = buffers.begin()->first->configuration().colorSpace == ColorSpace::Srgb ? 1 : 2;
 
-	if(type == 1)
+	bool dataWritten = false;
+	while(!dataWritten)
 	{
-		m->buf.resize(sizeof(uint32_t) * 5 + planeMetaData.bytesused); //type, size, width, height, maxVal, data
-
-		const uint8_t maxVal = 0xff;
-
-		//for viewfinder frames, just simply send it over as-is
-		*(uint32_t*)(m->buf.data()) = type;
-		*(uint32_t*)(m->buf.data() + sizeof(uint32_t)) = planeMetaData.bytesused;
-		*(uint32_t*)(m->buf.data() + 2 * sizeof(uint32_t)) = dimensions.width;
-		*(uint32_t*)(m->buf.data() + 3 * sizeof(uint32_t)) = dimensions.height;
-		*(uint32_t*)(m->buf.data() + 4 * sizeof(uint32_t)) = maxVal;
-		memcpy(m->buf.data() + 5 * sizeof(uint32_t), fdToMem[plane.fd.get()].first, planeMetaData.bytesused);
-	}
-	else if(type == 2)
-	{
-		//for still image capture, we have raw  SBGGR10 data
-		uint32_t bytesSent = dimensions.width / 2 * dimensions.height / 2 * sizeof(uint16_t);
-
-		const uint16_t* pixels = (const uint16_t*)fdToMem[plane.fd.get()].first;
-
-		const uint16_t maxVal = 0x03FF;
-
-		//std::cout << "stride: " << stride << std::endl;
-		//std::cout << "bytes sent: " << bytesSent << std::endl;
-		
-		m->buf.resize(sizeof(uint32_t) * 5 + bytesSent); //type, size, width, height, maxVal, data
-		*(uint32_t*)(m->buf.data()) = type;
-		*(uint32_t*)(m->buf.data() + sizeof(uint32_t)) = bytesSent;
-		*(uint32_t*)(m->buf.data() + 2 * sizeof(uint32_t)) = dimensions.width >> 1;
-		*(uint32_t*)(m->buf.data() + 3 * sizeof(uint32_t)) = dimensions.height >> 1;
-		*(uint32_t*)(m->buf.data() + 4 * sizeof(uint32_t)) = maxVal;
-
-		uint32_t counter = 0;
-
-		//process raw image row-by-row
-		//each row will contain either R-G or B-G components alternating
-		//eg.
-		//BGBGBGBG
-		//GRGRGRGR
-		//BGBGBGBG
-		//GRGRGRGR
-		//this would normally get de-bayered, but we'll just extract 
-		//the red component and work with that
-
-		//skip even rows, we're only interested in R values
-		for(int y = 1; y < dimensions.height; y += 2)
 		{
-			//skip even columns, we're only interested in R values
-			for(int x = 1; x < dimensions.width; x += 2)
+			std::lock_guard<std::mutex> guard(threadDataSelectorMutex);	
+
+			if(threadDataAorB)
 			{
-				//extract bottom 10bits
-				uint16_t pixel = pixels[y * dimensions.width + x] & maxVal;
-
-				uint32_t offset = 5 * sizeof(uint32_t) + counter * sizeof(uint16_t);
-
-				//if(offset >= m->buf.size())
-				//{
-				//	std::cerr << "writing out of bounds raw data" << std::endl;
-				//	return;
-				//}
-
-				*(uint16_t*)(m->buf.data() + offset) = pixel;
-				counter++;
+				std::lock_guard<std::mutex> guard(threadDataMutexB);
+				if(!threadDataTypeB) //only write data if the previous data has been consumed
+				{
+					threadDataB.resize(std::max(planeMetaData.bytesused, (unsigned int)threadDataB.size()));
+					memcpy(threadDataB.data(), fdToMem[plane.fd.get()].first, planeMetaData.bytesused);
+					threadDataWidthB = dimensions.width;
+					threadDataHeightB = dimensions.height;
+					threadDataTypeB = type;
+					dataWritten = true;
+				}
+			}
+			else
+			{
+				std::lock_guard<std::mutex> guard(threadDataMutexA);
+				if(!threadDataTypeA)
+				{
+					threadDataA.resize(std::max(planeMetaData.bytesused, (unsigned int)threadDataA.size()));
+					memcpy(threadDataA.data(), fdToMem[plane.fd.get()].first, planeMetaData.bytesused);
+					threadDataWidthA = dimensions.width;
+					threadDataHeightA = dimensions.height;
+					threadDataTypeA = type;
+					dataWritten = true;
+				}
 			}
 		}
+
+		std::this_thread::sleep_for(std::chrono::microseconds(1000));
 	}
 
-	ws->broadcastMessage(std::move(m));
+	//for debugging, make it single threaded
+	//compressAndSend((uint8_t*)fdToMem[plane.fd.get()].first, type, dimensions.width, dimensions.height);
 
 	//std::cout << "Seq#: " << metadata.sequence << std::endl;
 	//std::cout << "Size: " << planeMetaData.bytesused << std::endl;
@@ -187,21 +292,30 @@ int main(int argc, char** args)
 {
 	if (argc < 2)
 	{
-		std::cerr << "Usage " << args[0] << " address port" << std::endl;
-		std::cerr << "Default port 50000 used if omitted" << std::endl;
+		std::cerr << "Usage " << args[0] << " exposureTime(us) address port" << std::endl;
+		std::cerr << "Default 10000us and port 50000 used if omitted" << std::endl;
+	}
+
+	int exposureTime = 10000;
+	if(argc > 1)
+	{
+		exposureTime = std::stoi(std::string(args[1]));
 	}
 
 	std::string address;
-	if(argc > 1)
+	if(argc > 2)
 	{
-		address = std::string(args[1]);
+		address = std::string(args[2]);
 	}
 
 	int port = 50000;
-	if (argc > 2)
+	if (argc > 3)
 	{
-		port = std::stoi(std::string(args[2]));
+		port = std::stoi(std::string(args[3]));
 	}
+
+	std::cout << "Exposure time: " << exposureTime << " us" << std::endl;
+	std::cout << "Listening address: " << address << ":" << port << std::endl;
 
 	socket::init();
 
@@ -337,7 +451,7 @@ int main(int argc, char** args)
 	//controlList.set(controls::AeExposureMode, ExposureNormal);
 	//controlList.set(controls::AeFlickerMode, controls::FlickerOff);
 	//controlList.set(controls::ExposureValue, true);
-	controlList.set(controls::ExposureTime, 10000); //microseconds
+	controlList.set(controls::ExposureTime, exposureTime); //microseconds
 	//controlList.set(controls::ExposureTimeMode, true);
 	controlList.set(controls::AnalogueGain, 1.0f); //float, must be >=1.0
 	//controlList.set(controls::AnalogueGainMode, true);
@@ -353,6 +467,8 @@ int main(int argc, char** args)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
+
+	std::thread compressionThread(compressionThreadFunc);
 
 	while (ws->hasConnections())
 	{
@@ -392,10 +508,13 @@ int main(int argc, char** args)
 		auto end = std::chrono::system_clock::now();
 		auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 		auto offset_usec = std::chrono::microseconds(850); //offset added to make sure frames are ready in time
-		auto frame_time = std::chrono::microseconds(10000); 
-		std::this_thread::sleep_for(std::chrono::microseconds(frame_time - elapsed + offset_usec));
+		//auto frame_time = std::chrono::microseconds(10000); 
+		//std::this_thread::sleep_for(std::chrono::microseconds(frame_time - elapsed + offset_usec));
+		std::this_thread::sleep_for(std::chrono::microseconds(offset_usec));
 #endif
 	}
+
+	compressionThread.join();
 
 	ws->close();
 

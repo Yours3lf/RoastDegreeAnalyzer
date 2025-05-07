@@ -471,6 +471,107 @@
             document.getElementById("circleSize").style.display = "none";
         }
 
+        function getCompressedImageMetaData(uint8array, result){
+            let uint32Array = new Uint32Array(uint8array.buffer, uint8array.byteOffset, 5);
+
+            for(let i = 0; i < 5; ++i){
+                result.push(uint32Array[i]);
+            }
+        }
+
+        function decompressImage(uint8array, type){
+            let arrayBuf = uint8array.buffer;
+            let arrayBufOffset = uint8array.byteOffset;
+
+            let byteOffset = 5 * 4;
+
+            let result = [];
+            getCompressedImageMetaData(uint8array, result);
+
+            let width = result[0];
+            let height = result[1];
+            let channels = result[2];
+            let bitDepthPerChannel = result[3];
+            let tileSize = result[4];
+
+            let pixels = null;
+            let dataSize = null; //size of each element in the decompressed image in bytes
+
+            if(bitDepthPerChannel <= 8){
+                pixels = new Uint8ClampedArray(width * height * channels);
+                dataSize = 1;
+            }else{
+                pixels = new Uint16Array(width * height * channels);
+                dataSize = 2;
+            }          
+
+            for(let y = 0; y < height; y += tileSize){
+                for(let x = 0; x < width; x += tileSize){
+                    for(let c = 0; c < channels; ++c){
+                        let minValue = null;
+                        if(dataSize < 2){
+                            minValue = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 1))[0]);
+                        }
+                        else{
+                            let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 2);
+                            minValue = Number(tmp[0]) | (Number(tmp[1]) << 8);
+                        }
+                        byteOffset += dataSize;
+
+                        let tile = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 1))[0]);
+                        let tileBpp = (tile & 0xf) + 1;
+                        byteOffset += 1;
+
+                        let maxVal = (Number(1) << tileBpp) - 1;
+
+                        if(tileSize == 2 && tileBpp == 1){
+                            let tileData = (tile & 0xf0) >> 4;
+
+                            let counter = 0; 
+                            for(let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb)
+							{
+								for(let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb)
+								{
+									let pixel = minValue + (tileData >> counter++) & maxVal;
+									pixels[(yb * width + xb) * channels + c] = pixel;
+								}
+							}
+                        }
+                        else{
+                            let counter = 0;
+							for(let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb)
+							{
+								for(let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb)
+								{
+                                    let currData = null;
+                                    let tileDataSize = null;
+                                    if(tileBpp <= 8){
+                                        currData = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 1))[0]);
+                                        tileDataSize = 1;
+                                    }
+                                    else{                                  
+                                        let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 2);
+                                        currData = Number(tmp[0]) | (Number(tmp[1]) << 8);
+                                        tileDataSize = 2;
+                                    }
+
+                                    let diff = (currData >> (counter % (tileDataSize * 8))) & maxVal;
+                                    let pixel = minValue + diff;
+                                    pixels[(yb * width + xb) * channels + c] = pixel;
+
+                                    counter += tileBpp;
+                                }
+                            }
+
+                            byteOffset += (tileSize * tileSize * tileBpp) >> 3;
+                        }
+                    }
+                }
+            }
+
+            return pixels;
+        }
+
         function connect(serverURL) {
             try {
                 webSocket = new WebSocket(serverURL);
@@ -502,7 +603,29 @@
                         console.log(event.data);
                     }
                     else if (typeof event.data == "object") {
-                        handleCapture(event.data, true);
+                        let type = (new Uint32Array(event.data, 0, 1))[0];
+                        let maxVal = type == 1 ? 0xff : 0x3ff;
+                        let metadata = [];
+                        getCompressedImageMetaData(new Uint8Array(event.data, 4), metadata);
+
+                        let decompressedImage = decompressImage(new Uint8Array(event.data, 4));
+                        
+                        let fullImage = new ArrayBuffer(decompressedImage.byteLength + 5 * 4);
+                        let fullImageMetaData = new Uint32Array(fullImage, 0, 5);
+                        fullImageMetaData[0] = type;
+                        fullImageMetaData[1] = decompressedImage.byteLength;
+                        fullImageMetaData[2] = metadata[0];
+                        fullImageMetaData[3] = metadata[1];
+                        fullImageMetaData[4] = maxVal;
+
+                        if(type == 1){
+                            (new Uint8Array(fullImage, 5*4)).set(new Uint8Array(decompressedImage.buffer));
+                        }
+                        else{
+                            (new Uint16Array(fullImage, 5*4)).set(new Uint16Array(decompressedImage.buffer));
+                        }
+                        
+                        handleCapture(fullImage, true);
                     }
                 }
             }
