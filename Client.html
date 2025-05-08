@@ -98,7 +98,7 @@
         function getAgtronValue(x, correctionFactor = 0.9734) {
             let val = x * correctionFactor;
 
-            return 0.000049 * val**3 + -0.032270 * val**2 + 7.122484 * val + -472.788170;
+            return 0.000049 * val ** 3 + -0.032270 * val ** 2 + 7.122484 * val + -472.788170;
         }
 
         async function pickSaveFile() {
@@ -312,14 +312,14 @@
 
             let numConsidered = 10;
             let sortedArray = Array.from(histogram.entries());
-            sortedArray = sortedArray.sort(function(a, b){
-                if(a[1] < b[1]) return 1;
-                if(a[1] > b[1]) return -1;
-                if(a[1] == b[1]) return 0;
+            sortedArray = sortedArray.sort(function (a, b) {
+                if (a[1] < b[1]) return 1;
+                if (a[1] > b[1]) return -1;
+                if (a[1] == b[1]) return 0;
             });
 
             let candidate = 0;
-            for(let i = 0; i < numConsidered; i++){ 
+            for (let i = 0; i < numConsidered; i++) {
                 candidate += sortedArray[i][0];
             }
             candidate /= numConsidered;
@@ -330,19 +330,19 @@
             let barCounter = 0;
             let barwidth = canvas.width / histogram.size;
             for (const [key, val] of histogram) {
-                if (Math.abs(key - min) < 2){
+                if (Math.abs(key - min) < 2) {
                     ctx.fillStyle = "#000000";
                 }
-                else if(Math.abs(key - max) < 2){
+                else if (Math.abs(key - max) < 2) {
                     ctx.fillStyle = "#ffffff";
                 }
-                else if(Math.abs(key - avg) < 2){
+                else if (Math.abs(key - avg) < 2) {
                     ctx.fillStyle = "#ff0000";
                 }
-                else if(Math.abs(key - mostFrequentKey) < 2){
+                else if (Math.abs(key - mostFrequentKey) < 2) {
                     ctx.fillStyle = "#ffff00";
                 }
-                else if(Math.abs(key - candidate) < 2){
+                else if (Math.abs(key - candidate) < 2) {
                     ctx.fillStyle = "#00ff00";
                 }
                 else {
@@ -471,19 +471,25 @@
             document.getElementById("circleSize").style.display = "none";
         }
 
-        function getCompressedImageMetaData(uint8array, result){
-            let uint32Array = new Uint32Array(uint8array.buffer, uint8array.byteOffset, 5);
+        function getCompressedImageMetaData(uint8array, result) {
+            let uint32Array = new Uint32Array(uint8array.buffer, uint8array.byteOffset, 2);
 
-            for(let i = 0; i < 5; ++i){
-                result.push(uint32Array[i]);
+            for (let i = 0; i < 2; ++i) {
+                result.push(Number(uint32Array[i]));
             }
+
+            let tmp = new Uint8Array(uint8array.buffer, uint8array.byteOffset + 2 * 4, 2);
+            let value = Number(tmp[0]) | (Number(tmp[1]) << 8);
+            result.push(((value >> 12) & 0xf) + 1); //channels
+            result.push((value & 0x3f) + 1);        //bpp
+            result.push(((value >> 6) & 0x3f) + 1); //tilesize
         }
 
-        function decompressImage(uint8array, type){
+        function decompressImage(uint8array, type) {
             let arrayBuf = uint8array.buffer;
             let arrayBufOffset = uint8array.byteOffset;
 
-            let byteOffset = 5 * 4;
+            let byteOffset = 2 * 4 + 2;
 
             let result = [];
             getCompressedImageMetaData(uint8array, result);
@@ -497,66 +503,72 @@
             let pixels = null;
             let dataSize = null; //size of each element in the decompressed image in bytes
 
-            if(bitDepthPerChannel <= 8){
+            if (bitDepthPerChannel <= 8) {
                 pixels = new Uint8ClampedArray(width * height * channels);
                 dataSize = 1;
-            }else{
+            } else {
                 pixels = new Uint16Array(width * height * channels);
                 dataSize = 2;
-            }          
+            }
 
-            for(let y = 0; y < height; y += tileSize){
-                for(let x = 0; x < width; x += tileSize){
-                    for(let c = 0; c < channels; ++c){
-                        let minValue = null;
-                        if(dataSize < 2){
-                            minValue = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 1))[0]);
-                        }
-                        else{
-                            let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 2);
-                            minValue = Number(tmp[0]) | (Number(tmp[1]) << 8);
-                        }
-                        byteOffset += dataSize;
+            for (let y = 0; y < height; y += tileSize) {
+                for (let x = 0; x < width; x += tileSize) {
+                    for (let c = 0; c < channels; ++c) {
+                        let metadata = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 1))[0]);
 
-                        let tile = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 1))[0]);
-                        let tileBpp = (tile & 0xf) + 1;
-                        byteOffset += 1;
+                        let tileBpp = (metadata & 0x3f) + 1;
+                        let allTilePixelsSame = (metadata >> 6) & 0x1;
+                        let fullOrDiffFrame = (metadata >> 7) & 0x1;
 
                         let maxVal = (Number(1) << tileBpp) - 1;
 
-                        if(tileSize == 2 && tileBpp == 1){
-                            let tileData = (tile & 0xf0) >> 4;
+                        byteOffset += 1;
 
-                            let counter = 0; 
-                            for(let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb)
-							{
-								for(let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb)
-								{
-									let pixel = minValue + (tileData >> counter++) & maxVal;
-									pixels[(yb * width + xb) * channels + c] = pixel;
-								}
-							}
+                        let minValue = null;
+                        if (dataSize * 8 != tileBpp || allTilePixelsSame) {
+                            if (dataSize < 2) {
+                                minValue = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 1))[0]);
+                            }
+                            else {
+                                let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset, 2);
+                                minValue = Number(tmp[0]) | (Number(tmp[1]) << 8);
+                            }
+                            byteOffset += dataSize;
                         }
-                        else{
+
+                        if (allTilePixelsSame) {
+                            for (let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb) {
+                                for (let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb) {
+                                    pixels[(yb * width + xb) * channels + c] = minValue;
+                                }
+                            }
+                        }
+                        else {
                             let counter = 0;
-							for(let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb)
-							{
-								for(let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb)
-								{
+                            for (let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb) {
+                                for (let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb) {
                                     let currData = null;
                                     let tileDataSize = null;
-                                    if(tileBpp <= 8){
+                                    if (tileBpp <= 8) {
                                         currData = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 1))[0]);
                                         tileDataSize = 1;
                                     }
-                                    else{                                  
+                                    else {
                                         let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 2);
                                         currData = Number(tmp[0]) | (Number(tmp[1]) << 8);
                                         tileDataSize = 2;
                                     }
 
-                                    let diff = (currData >> (counter % (tileDataSize * 8))) & maxVal;
-                                    let pixel = minValue + diff;
+                                    let pixel = 0;
+
+                                    if (dataSize * 8 != tileBpp) {
+                                        let diff = (currData >> (counter % (tileDataSize * 8))) & maxVal;
+                                        pixel = minValue + diff;
+                                    }
+                                    else {
+                                        pixel = currData;
+                                    }
+
                                     pixels[(yb * width + xb) * channels + c] = pixel;
 
                                     counter += tileBpp;
@@ -609,7 +621,7 @@
                         getCompressedImageMetaData(new Uint8Array(event.data, 4), metadata);
 
                         let decompressedImage = decompressImage(new Uint8Array(event.data, 4));
-                        
+
                         let fullImage = new ArrayBuffer(decompressedImage.byteLength + 5 * 4);
                         let fullImageMetaData = new Uint32Array(fullImage, 0, 5);
                         fullImageMetaData[0] = type;
@@ -618,13 +630,13 @@
                         fullImageMetaData[3] = metadata[1];
                         fullImageMetaData[4] = maxVal;
 
-                        if(type == 1){
-                            (new Uint8Array(fullImage, 5*4)).set(new Uint8Array(decompressedImage.buffer));
+                        if (type == 1) {
+                            (new Uint8Array(fullImage, 5 * 4)).set(new Uint8Array(decompressedImage.buffer));
                         }
-                        else{
-                            (new Uint16Array(fullImage, 5*4)).set(new Uint16Array(decompressedImage.buffer));
+                        else {
+                            (new Uint16Array(fullImage, 5 * 4)).set(new Uint16Array(decompressedImage.buffer));
                         }
-                        
+
                         handleCapture(fullImage, true);
                     }
                 }
