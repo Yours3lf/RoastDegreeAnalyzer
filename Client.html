@@ -547,35 +547,47 @@
                             let counter = 0;
                             for (let yy = 0, yb = y; yy < tileSize && yb < height; ++yy, ++yb) {
                                 for (let xx = 0, xb = x; xx < tileSize && xb < width; ++xx, ++xb) {
-                                    let currData = null;
-                                    let tileDataSize = null;
-                                    if (tileBpp <= 8) {
-                                        currData = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 1))[0]);
-                                        tileDataSize = 1;
-                                    }
-                                    else {
-                                        let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 2);
-                                        currData = Number(tmp[0]) | (Number(tmp[1]) << 8);
-                                        tileDataSize = 2;
-                                    }
-
                                     let pixel = 0;
 
                                     if (dataSize * 8 != tileBpp) {
-                                        let diff = (currData >> (counter % (tileDataSize * 8))) & maxVal;
-                                        pixel = minValue + diff;
+                                        let diff = 0;
+                                        
+                                        let bitsLeftToRead = tileBpp;
+
+                                        while(bitsLeftToRead > 0){
+                                            let currByte = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 1))[0]);
+
+                                            let bitsToRead = Math.min(bitsLeftToRead, 8 - (counter % 8));
+                                            let bitsToReadMask = (Number(1) << bitsToRead) - 1;
+
+                                            diff |= ((currByte >> (counter % 8)) & bitsToReadMask) << (tileBpp - bitsLeftToRead);
+
+                                            counter += bitsToRead;
+											bitsLeftToRead -= bitsToRead;
+                                        }
+                                                
+                                        pixel = minValue + (diff & maxVal);
                                     }
                                     else {
+                                        let currData = null;
+                                        if (tileBpp <= 8) {
+                                            currData = Number((new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 1))[0]);
+                                        }
+                                        else {
+                                            let tmp = new Uint8Array(arrayBuf, arrayBufOffset + byteOffset + (counter >> 3), 2);
+                                            currData = Number(tmp[0]) | (Number(tmp[1]) << 8);
+                                        }
+
                                         pixel = currData;
+                                        counter += tileBpp;
                                     }
 
                                     pixels[(yb * width + xb) * channels + c] = pixel;
-
-                                    counter += tileBpp;
                                 }
                             }
 
-                            byteOffset += (tileSize * tileSize * tileBpp) >> 3;
+                            let tileSizeBits = (tileSize * tileSize * tileBpp);
+                            byteOffset += (tileSizeBits >> 3) + ((tileSizeBits % 8) > 0);
                         }
                     }
                 }
