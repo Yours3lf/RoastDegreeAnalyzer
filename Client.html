@@ -310,7 +310,7 @@
                 }
             }
 
-            let numConsidered = 10;
+            let numConsidered = Math.min(10, histogram.size);
             let sortedArray = Array.from(histogram.entries());
             sortedArray = sortedArray.sort(function (a, b) {
                 if (a[1] < b[1]) return 1;
