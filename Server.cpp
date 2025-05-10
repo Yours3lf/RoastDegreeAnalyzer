@@ -449,18 +449,16 @@ int main(int argc, char **args)
 
 	// set up camera controls
 	ControlList controlList;
+	
 	controlList.set(controls::AeEnable, false);
-	// controlList.set(controls::AeMeteringMode, controls::MeteringCentreWeighted);
-	// controlList.set(controls::AeConstraintMode, controls::ConstraintHighlight);
-	// controlList.set(controls::AeExposureMode, ExposureNormal);
-	// controlList.set(controls::AeFlickerMode, controls::FlickerOff);
-	// controlList.set(controls::ExposureValue, true);
+	controlList.set(controls::ExposureValue, 1.0f);
+	controlList.set(controls::ExposureTimeMode, controls::ExposureTimeModeManual); // microseconds
 	controlList.set(controls::ExposureTime, exposureTime); // microseconds
-	// controlList.set(controls::ExposureTimeMode, true);
+	
+	controlList.set(controls::AnalogueGainMode, controls::AnalogueGainModeManual); // float, must be >=1.0
 	controlList.set(controls::AnalogueGain, 1.0f); // float, must be >=1.0
-	// controlList.set(controls::AnalogueGainMode, true);
+	
 	controlList.set(controls::AfMode, controls::AfModeContinuous);
-	// controlList.set(controls::AfMetering, true);
 
 	// start camera, request queuing
 	camera->start(&controlList);
