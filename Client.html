@@ -94,8 +94,9 @@
         //Estimate Agtron value given an input measurement
         //uses above calibration
         //use black paper to figure out correction factor
-        //with correction factor you should get R0
-        function getAgtronValue(x, correctionFactor = 0.9734) {
+        //with correction factor you should get R95 for a cinnamon roast
+        //eg pulling a roast right after first crack
+        function getAgtronValue(x, correctionFactor = 0.7728) {
             let val = x * correctionFactor;
 
             return 0.000049 * val ** 3 + -0.032270 * val ** 2 + 7.122484 * val + -472.788170;
