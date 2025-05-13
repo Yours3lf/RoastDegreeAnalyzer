@@ -364,7 +364,7 @@
             document.getElementById("meanVal").innerHTML = "Mean: " + mostFrequentKey;
             document.getElementById("avgVal").innerHTML = "Avg: " + avg.toFixed(2);
             document.getElementById("top20AvgVal").innerHTML = "Top " + numConsidered + " avg: " + candidate.toFixed(2);
-            document.getElementById("agtronVal").innerHTML = "Agtron R" + Math.floor(getAgtronValue(avg));
+            document.getElementById("agtronVal").innerHTML = "Agtron R" + getAgtronValue(avg).toFixed(1);
         }
 
         function handleCapture(arrayBuf, visualiseStillImage = true) {
