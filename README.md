@@ -11,7 +11,7 @@ Coffee Roast Degree Analyzer using a camera without an infrared filter, a near i
 - Waveshare Infrared LED board (850nm)
 	- ![](https://www.waveshare.com/media/catalog/product/cache/1/image/800x800/9df78eab33525d08d6e5fb8d27136e95/i/n/infrared-led-board_l_1_5.jpg)
 	- https://www.waveshare.com/infrared-led-board.htm
-- Pringles can, cardboard and ductape for enclosure
+- Pringles can, cardboard and ductape for enclosure. You can also use a 3D printed enclosure to make it nicer.
 
 My research indicated that roasted coffee's spectral response is highest around the 850nm wavelength. 
 ![](https://content.instructables.com/F7A/FR8S/JOONL4U7/F7AFR8SJOONL4U7.png?auto=webp&frame=1&fit=bounds&md=MjAxOC0xMS0xOSAxNzowMToyNi4w)
@@ -21,6 +21,9 @@ A Pringles can is used to create an enclosure to ensure that no light enters the
 
 The Raspberry Pi Camera Module 3 NoIR is essential as it doesn't have an infrared filter to cut off that 850nm wavelength light and it also still has a fairly good spectral response in that range. Other camera modules don't seem to have such a good spectral response in that range.
 https://www.researchgate.net/publication/386554881/figure/fig6/AS:11431281295727983@1733714933410/Spectral-Response-of-Raspberry-Pi-Camera-Module-3-NoIR-Response-of-the-Red-R-Green.ppm
+
+Important Note:
+Do not power the infrared LED off of the Raspberry Pi. It can damage the RPi like that. Run it off of a separate USB charger by cutting up a Micro USB cable and connecting the exposed wires to a 5v -> 3.3v step down DC voltage converter. Then the 3.3v output of that can be used to power the LED.
 
 ## How it works:
 1. The server captures a raw image from the camera
@@ -64,3 +67,4 @@ Run server:
 `./RoastDegreeAnalyzer`
  
  Then open Client.html on your client device and connect to the Raspberry Pi's IP address
+
